@@ -1,7 +1,11 @@
 ﻿using JWTAuthenticationServer.Data;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.IdentityModel.Tokens;
 using SharedClassLibrary.Contracts;
 using SharedClassLibrary.DTOs;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using static SharedClassLibrary.DTOs.ServiceResponses;
 
 namespace JWTAuthenticationServer.Repositories
@@ -12,7 +16,7 @@ namespace JWTAuthenticationServer.Repositories
         IConfiguration config)
         : IUserAccount
     {
-        public async Task<ServiceResponses.GeneralResponse> Createaccount(UserDto userDto)
+        public async Task<GeneralResponse> Createaccount(UserDto userDto)
         {
             if (userDto is null) return new GeneralResponse(false, "Model Is Empty");
             var newUser = new ApplicationUser()
@@ -24,7 +28,7 @@ namespace JWTAuthenticationServer.Repositories
             };
             
             var user = await userManager.FindByEmailAsync(newUser.Email);
-            if (user is null) return new GeneralResponse(false, "User registered already");
+            if (user is not null) return new GeneralResponse(false, "User registered already");
 
             var createUser = await userManager.CreateAsync(newUser!, userDto.Password);
             if (!createUser.Succeeded) return new GeneralResponse(false, "Error Occured please try again");
@@ -47,9 +51,44 @@ namespace JWTAuthenticationServer.Repositories
             }
         }
 
-        public Task<ServiceResponses.LoginResponse> LoginAccount(LoginDTO loginDto)
+        public async Task<LoginResponse> LoginAccount(LoginDTO loginDto)
         {
-            throw new NotImplementedException();
+            if (loginDto == null)
+                return new LoginResponse(false, null!, "Login container is empty");
+
+            var getUser = await userManager.FindByEmailAsync(loginDto.Email);
+            if (getUser is null)
+                return new LoginResponse(false, null!, "User not found");
+
+            bool checkUserPasswords = await userManager.CheckPasswordAsync(getUser, loginDto.Password);
+            if (!checkUserPasswords)
+                return new LoginResponse(false, null!, "Invalid email/password");
+
+            var getUserRole = await userManager.GetRolesAsync(getUser);
+            var userSession = new UserSession(getUser.Id, getUser.Name, getUser.Email, getUserRole.First());
+            string token = GenerateToken(userSession);
+            return new LoginResponse(true, token!, "Login completed");
+        }
+
+        private string GenerateToken(UserSession user)
+        {
+            var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"]!));
+            var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
+            var userClaims = new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, user.Id),
+                new Claim(ClaimTypes.Name, user.Name),
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Role, user.Role)
+            };
+            var token = new JwtSecurityToken(
+                issuer: config["Jwt:Issuer"],
+                audience: config["Jwt:Audience"],
+                claims: userClaims,
+                expires: DateTime.Now.AddDays(1),
+                signingCredentials: credentials
+                );
+            return new JwtSecurityTokenHandler().WriteToken(token);
         }
     }
 }
